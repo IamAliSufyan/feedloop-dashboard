@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Feedloop</title>
+<style>
+:root { --paper:#F5F2E7; --ink:#16150F; --coral:#FF5636; --lime:#C6F04D; --amber:#E8A33D;
+        --card:#FBF9F2; --tx2:#6b6656; }
+* { box-sizing:border-box; margin:0; }
+body { background:var(--paper); color:var(--ink); font:15px/1.5 -apple-system,'SF Pro Text',Helvetica,sans-serif;
+       background-image:linear-gradient(#e8e4d5 1px,transparent 1px),linear-gradient(90deg,#e8e4d5 1px,transparent 1px);
+       background-size:28px 28px; padding:28px 16px 80px; }
+.wrap { max-width:980px; margin:0 auto; }
+h1 { font-size:34px; letter-spacing:-.5px; }
+h1 .dot { color:var(--coral); }
+.kicker { font:600 11px/1 ui-monospace,Menlo,monospace; letter-spacing:.18em; color:var(--tx2);
+          text-transform:uppercase; margin-bottom:6px; }
+.sub { color:var(--tx2); margin:6px 0 26px; }
+.day { margin:26px 0 10px; font:700 13px ui-monospace,Menlo,monospace; letter-spacing:.12em;
+       text-transform:uppercase; color:var(--tx2); border-bottom:2px solid var(--ink); padding-bottom:4px; }
+.card { background:var(--card); border:2px solid var(--ink); border-radius:14px; padding:16px 18px;
+        margin:12px 0; box-shadow:4px 4px 0 var(--ink); }
+.row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+.title { font-weight:700; font-size:16px; margin-right:auto; }
+.chip { font:600 10px/1 ui-monospace,Menlo,monospace; letter-spacing:.1em; text-transform:uppercase;
+        border:1.5px solid var(--ink); border-radius:99px; padding:4px 9px; background:#fff; }
+.chip.x { background:#111; color:#fff; } .chip.instagram { background:#f0c; color:#fff; border-color:#f0c; }
+.chip.tiktok { background:#000; color:#5ff; } .chip.youtube { background:#e00; color:#fff; border-color:#e00; }
+.chip.draft { background:#fff; } .chip.approved { background:var(--lime); }
+.chip.published { background:var(--ink); color:var(--lime); } .chip.rejected { background:#ddd; color:#777; }
+.chip.warn { background:var(--amber); }
+.body { white-space:pre-wrap; background:#fff; border:1.5px dashed #cfc9b4; border-radius:10px;
+        padding:12px 14px; margin:10px 0; font-size:14.5px; }
+.meta { font:12px ui-monospace,Menlo,monospace; color:var(--tx2); margin-top:4px; word-break:break-all; }
+.notes { font-size:13px; color:#8a5a00; background:#fff6e3; border:1.5px solid var(--amber);
+         border-radius:8px; padding:8px 10px; margin:8px 0; }
+img.thumb { max-height:190px; max-width:60%; border:2px solid var(--ink); border-radius:10px; display:block; }
+.actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+button { font:700 13px -apple-system,sans-serif; border:2px solid var(--ink); border-radius:99px;
+         padding:8px 16px; cursor:pointer; background:#fff; box-shadow:2px 2px 0 var(--ink); }
+button:active { transform:translate(2px,2px); box-shadow:none; }
+button:disabled { opacity:.5; cursor:wait; }
+button.ok { background:var(--lime); } button.no { background:#eee; }
+button.pub { background:var(--coral); color:#fff; }
+textarea, input[type=text], input[type=password] { width:100%; font:14px ui-monospace,Menlo,monospace;
+  border:2px solid var(--ink); border-radius:10px; padding:10px; background:#fff; }
+textarea { min-height:130px; }
+details.edit { margin-top:8px; } details.edit summary { cursor:pointer; font-weight:600; font-size:13px; }
+.flash { border:2px solid var(--ink); border-radius:10px; background:var(--lime); padding:10px 14px;
+         margin-bottom:18px; font-weight:600; box-shadow:3px 3px 0 var(--ink); }
+.flash.err { background:var(--coral); color:#fff; }
+.empty { color:var(--tx2); font-style:italic; padding:8px 0; }
+.section { margin-top:40px; }
+.setup { background:var(--card); border:2px solid var(--ink); border-radius:14px; padding:20px;
+         box-shadow:4px 4px 0 var(--ink); max-width:640px; }
+.setup label { font-weight:700; font-size:13px; display:block; margin:14px 0 4px; }
+.setup .hint { font-size:13px; color:var(--tx2); margin-top:10px; }
+.setup ol { margin:8px 0 0 20px; font-size:13.5px; color:var(--tx2); }
+a { color:var(--coral); }
+.topbar { display:flex; gap:10px; align-items:center; margin-bottom:8px; }
+.topbar button { margin-left:auto; }
+#spin { display:none; font:12px ui-monospace,monospace; color:var(--tx2); }
+</style>
+</head>
+<body><div class="wrap" id="app"></div>
+<script>
+"use strict";
+// When set, the dashboard uses email+password login via this Cloudflare worker
+// (which holds the GitHub credential server-side). Empty = direct-PAT mode.
+const WORKER_URL = "/api";
+const DEFAULTS = { owner:"IamAliSufyan", repo:"unloop-app", branch:"main" };
+const BASEDIR = "docs/marketing/feedloop";
+const BUCKETS = ["drafts","queue","published","rejected"];
+const STATUS = { drafts:"draft", queue:"approved", published:"published", rejected:"rejected" };
+const MANUAL = new Set(["tiktok"]);
+const FLAGS = ["HOLD","EDIT REQUIRED","ASSET NEEDED","MANUAL"];
+const cfg = () => ({
+  token: localStorage.getItem("fl_token") || "",
+  jwt:   localStorage.getItem("fl_jwt")   || "",
+  owner: localStorage.getItem("fl_owner") || DEFAULTS.owner,
+  repo:  localStorage.getItem("fl_repo")  || DEFAULTS.repo,
+  branch:localStorage.getItem("fl_branch")|| DEFAULTS.branch,
+});
+const workerMode = () => !!WORKER_URL && localStorage.getItem("fl_forcepat") !== "1";
+const signedIn = () => workerMode() ? !!cfg().jwt : !!cfg().token;
+let POSTS = [], FLASH = "", BUSY = false;
+const $ = s => document.querySelector(s);
+const esc = s => (s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function gh(path, opts = {}) {
+  const c = cfg();
+  const base = workerMode() ? `${WORKER_URL}/gh` : "https://api.github.com";
+  const auth = workerMode() ? c.jwt : c.token;
+  const r = await fetch(`${base}${path}`, {
+    ...opts,
+    headers: { "Authorization": `Bearer ${auth}`, "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28", ...(opts.headers||{}) },
+  });
+  if (r.status === 404 && opts.allow404) return null;
+  if (r.status === 401 && workerMode()) { localStorage.removeItem("fl_jwt"); }
+  if (!r.ok) throw new Error(`${r.status} ${((await r.json().catch(()=>({}))).message)||r.statusText} (${path})`);
+  return r.status === 204 ? null : r.json();
+}
+const contentsURL = p => { const c = cfg(); return `/repos/${c.owner}/${c.repo}/contents/${encodeURIComponent(p).replaceAll("%2F","/")}`; };
+const q = () => `?ref=${encodeURIComponent(cfg().branch)}`;
+
+// UTF-8 safe base64
+const b64enc = s => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+const b64dec = s => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\n/g,"")), c => c.charCodeAt(0)));
+
+function parsePost(name, raw, bucket, sha) {
+  const meta = { id:name.replace(/\.md$/,""), title:name, channel:"", integration:"", when:"",
+                 image:"", status:STATUS[bucket], notes:"", postiz:"", published_at:"", release:"" };
+  let body = raw;
+  const m = raw.match(/^---\n([\s\S]*?)\n---\n?/);
+  if (m) {
+    for (const line of m[1].split("\n")) {
+      const i = line.indexOf(":");
+      if (i > 0) { const k = line.slice(0,i).trim(); if (k in meta) meta[k] = line.slice(i+1).trim(); }
+    }
+    body = raw.slice(m[0].length);
+  }
+  return { ...meta, body: body.replace(/^\n+|\n+$/g,""), bucket, sha, file:name, hasFM: !!m };
+}
+function serialize(p, over = {}) {
+  const m = { ...p, ...over };
+  const keys = ["id","title","channel","integration","when","image","status","notes"];
+  if (m.postiz) keys.push("postiz"); if (m.published_at) keys.push("published_at"); if (m.release) keys.push("release");
+  return "---\n" + keys.map(k => `${k}: ${m[k]??""}`).join("\n") + "\n---\n" + (over.body ?? p.body) + "\n";
+}
+
+async function loadAll() {
+  const out = [];
+  for (const b of BUCKETS) {
+    const list = await gh(contentsURL(`${BASEDIR}/content/${b}`) + q(), { allow404:true }) || [];
+    for (const f of list) {
+      if (!f.name.endsWith(".md")) continue;
+      const item = await gh(contentsURL(f.path) + q());
+      out.push(parsePost(f.name, b64dec(item.content), b, f.sha));
+    }
+  }
+  return out;
+}
+
+const imgCache = {};
+async function imgSrc(rel) {
+  if (imgCache[rel]) return imgCache[rel];
+  try {
+    const item = await gh(contentsURL(`${BASEDIR}/${rel}`) + q());
+    const ext = rel.split(".").pop().toLowerCase();
+    return imgCache[rel] = `data:image/${ext==="jpg"?"jpeg":ext};base64,${item.content.replace(/\n/g,"")}`;
+  } catch { return null; }
+}
+
+// --- actions (each = commits on the branch) ---
+async function movePost(p, destBucket) {
+  const c = cfg(), br = cfg().branch;
+  const newPath = `${BASEDIR}/content/${destBucket}/${p.file}`;
+  await gh(contentsURL(newPath), { method:"PUT", body: JSON.stringify({
+    message:`feedloop(web): ${p.id} -> ${destBucket}`, branch:br,
+    content: b64enc(serialize(p, { status: STATUS[destBucket] })) })});
+  await gh(contentsURL(`${BASEDIR}/content/${p.bucket}/${p.file}`), { method:"DELETE", body: JSON.stringify({
+    message:`feedloop(web): remove ${p.id} from ${p.bucket}`, branch:br, sha:p.sha })});
+}
+async function savePost(p, newBody, extraNote) {
+  const over = { body:newBody };
+  if (extraNote !== undefined) over.notes = extraNote;
+  await gh(contentsURL(`${BASEDIR}/content/${p.bucket}/${p.file}`), { method:"PUT", body: JSON.stringify({
+    message:`feedloop(web): edit ${p.id}`, branch:cfg().branch, sha:p.sha,
+    content: b64enc(serialize(p, over)) })});
+}
+
+async function act(id, bucket, action, payload) {
+  if (BUSY) return; BUSY = true;
+  const p = POSTS.find(x => x.id === id && x.bucket === bucket);
+  try {
+    if (!p) throw new Error("post not found; refresh");
+    if (action === "approve")   await movePost(p, "queue");
+    if (action === "reject")    await movePost(p, "rejected");
+    if (action === "unapprove") await movePost(p, "drafts");
+    if (action === "restore")   await movePost(p, "drafts");
+    if (action === "save")      await savePost(p, payload);
+    if (action === "asap")      await savePost(p, p.body, (p.notes ? p.notes + " " : "") + "PUBLISH ASAP (Ali flagged from web).");
+    FLASH = { ok:true, msg:`${action}: ${id} ✓ (committed)` };
+  } catch (e) { FLASH = { ok:false, msg:`ERROR ${action} ${id}: ${e.message}` }; }
+  BUSY = false;
+  refresh();
+}
+
+// --- rendering ---
+function card(p) {
+  const badges = [`<span class="chip ${esc(p.channel)}">${esc(p.channel||"?")}</span>`,
+                  `<span class="chip ${esc(p.status)}">${esc(p.status)}</span>`];
+  for (const f of FLAGS) if ((p.notes||"").toUpperCase().includes(f)) badges.push(`<span class="chip warn">${f}</span>`);
+  const acts = [];
+  const btn = (a,l,c2) => `<button class="${c2||""}" onclick="act('${p.id}','${p.bucket}','${a}')">${l}</button>`;
+  if (p.bucket === "drafts") acts.push(btn("approve","Approve ✓","ok"), btn("reject","Reject ✕","no"));
+  if (p.bucket === "queue")  acts.push(
+      MANUAL.has(p.channel) ? `<span class="chip warn">MANUAL POST</span>` : btn("asap","Publish ASAP 🚩","pub"),
+      btn("unapprove","Back to drafts","no"));
+  if (p.bucket === "rejected") acts.push(btn("restore","Restore","no"));
+  const edit = (p.bucket === "drafts" || p.bucket === "queue") && p.hasFM ? `
+    <details class="edit"><summary>Edit caption</summary>
+      <textarea id="ta-${p.id}">${esc(p.body)}</textarea>
+      <div style="margin-top:6px"><button class="ok" onclick="act('${p.id}','${p.bucket}','save',document.getElementById('ta-${p.id}').value)">Save caption</button></div>
+    </details>` : "";
+  const rel = p.release ? `<div class="meta">live: <a href="${esc(p.release)}" target="_blank">${esc(p.release)}</a></div>` : "";
+  const pm = p.postiz ? `<div class="meta">postiz: ${esc(p.postiz)} · ${esc(p.published_at)}</div>` : "";
+  return `<div class="card">
+    <div class="row"><span class="title">${esc(p.title)}</span>${badges.join("")}</div>
+    <div class="meta">${esc(p.when)} · content/${p.bucket}/${esc(p.file)}</div>
+    ${p.notes ? `<div class="notes">${esc(p.notes)}</div>` : ""}
+    <div class="body">${esc(p.body)}</div>
+    ${p.image ? `<img class="thumb" data-rel="${esc(p.image)}" alt="">` : ""}
+    ${rel}${pm}<div class="actions">${acts.join("")}</div>${edit}</div>`;
+}
+
+function render() {
+  const active = POSTS.filter(p => p.bucket === "drafts" || p.bucket === "queue")
+                      .sort((a,b) => (a.when||"9999").localeCompare(b.when||"9999"));
+  const days = {};
+  for (const p of active) (days[(p.when||"9999").slice(0,10)] ||= []).push(p);
+  let h = `<div class="topbar"><div>
+      <div class="kicker">Feedloop · content pipeline</div>
+      <h1>The week ahead<span class="dot">.</span></h1></div>
+      <span id="spin">working…</span>
+      <button class="no" onclick="refresh()">↻ Refresh</button>
+      <button class="no" onclick="localStorage.removeItem('fl_token');localStorage.removeItem('fl_jwt');boot()">Sign out</button></div>`;
+  h += `<div class="sub">${POSTS.filter(p=>p.bucket==="drafts").length} awaiting approval ·
+        ${POSTS.filter(p=>p.bucket==="queue").length} approved in queue ·
+        actions commit to ${esc(cfg().repo)}@${esc(cfg().branch)} · Claude publishes the queue (or flag Publish ASAP)</div>`;
+  if (FLASH) h += `<div class="flash ${FLASH.ok?"":"err"}">${esc(FLASH.msg)}</div>`;
+  if (!active.length) h += `<div class="empty">Nothing pending.</div>`;
+  for (const d of Object.keys(days).sort()) {
+    let label = "Unscheduled";
+    if (d !== "9999") { const dt = new Date(d+"T12:00:00Z");
+      label = dt.toLocaleDateString("en-US",{weekday:"long",month:"short",day:"2-digit"}); }
+    h += `<div class="day">${label}</div>` + days[d].map(card).join("");
+  }
+  const pub = POSTS.filter(p => p.bucket === "published")
+                   .sort((a,b) => (b.published_at||b.when||"").localeCompare(a.published_at||a.when||""));
+  h += `<div class="section"><div class="day">Published</div>${pub.map(card).join("") || '<div class="empty">none yet</div>'}</div>`;
+  const rej = POSTS.filter(p => p.bucket === "rejected");
+  if (rej.length) h += `<div class="section"><div class="day">Rejected</div>${rej.map(card).join("")}</div>`;
+  $("#app").innerHTML = h;
+  document.querySelectorAll("img.thumb").forEach(async el => {
+    const src = await imgSrc(el.dataset.rel); if (src) el.src = src; else el.remove();
+  });
+}
+
+function renderSetup(err) {
+  if (workerMode()) return renderLogin(err);
+  const c = cfg();
+  $("#app").innerHTML = `
+    <div class="kicker">Feedloop · content pipeline</div>
+    <h1>Connect<span class="dot">.</span></h1>
+    <div class="sub">One-time per device. The token stays in this browser only.</div>
+    <div class="setup">
+      ${err ? `<div class="flash err">${esc(err)}</div>` : ""}
+      <label>GitHub fine-grained token</label>
+      <input type="password" id="s-token" placeholder="github_pat_…" value="">
+      <label>Repository</label>
+      <input type="text" id="s-repo" value="${esc(c.owner)}/${esc(c.repo)}">
+      <label>Branch</label>
+      <input type="text" id="s-branch" value="${esc(c.branch)}">
+      <div style="margin-top:16px"><button class="ok" onclick="saveSetup()">Connect →</button></div>
+      <div class="hint">Create the token at GitHub → Settings → Developer settings →
+      Fine-grained tokens → Generate new token:
+      <ol><li>Repository access: <b>Only select repositories</b> → ${esc(c.owner)}/${esc(c.repo)}</li>
+      <li>Permissions → Repository → <b>Contents: Read and write</b></li>
+      <li>Expiration: 90 days (come back and paste a fresh one when it expires)</li></ol></div>
+    </div>`;
+}
+function renderLogin(err, opts = {}) {
+  let banner = "";
+  if (err === "BLOCKED" || opts.unreachable) {
+    banner = `<div class="flash err">Could not reach the sign-in service.</div>
+      <div class="notes"><b>Two likely causes, in order:</b>
+      <ol style="margin:6px 0 0 18px">
+        <li>You tried while the service was still starting up. <b>Just try again now</b> — it is up.</li>
+        <li>An ad blocker, VPN, or DNS filter is blocking <code>workers.dev</code> (some blocklists
+            include it). Test by opening
+            <a href="${WORKER_URL}/health" target="_blank">${WORKER_URL}/health</a> directly:
+            if you do not see <code>{"ok":true}</code>, allowlist that domain or turn the blocker
+            off for this site.</li>
+      </ol>
+      <div style="margin-top:8px">Still stuck? Use the
+      <a href="#" onclick="localStorage.setItem('fl_forcepat','1');boot();return false">token sign-in</a>
+      as a fallback.</div></div>`;
+  } else if (err) {
+    banner = `<div class="flash err">${esc(err)}</div>`;
+  }
+  $("#app").innerHTML = `
+    <div class="kicker">Feedloop · content pipeline</div>
+    <h1>Sign in<span class="dot">.</span></h1>
+    <div class="sub">Once per device. Your session is remembered here for 180 days.</div>
+    <div class="setup">
+      ${banner}
+      <label>Email</label>
+      <input type="text" id="l-email" autocomplete="username" placeholder="you@example.com">
+      <label>Password</label>
+      <input type="password" id="l-pass" autocomplete="current-password"
+             onkeydown="if(event.key==='Enter')doLogin()">
+      <div style="margin-top:16px"><button class="ok" onclick="doLogin()">Sign in →</button></div>
+    </div>`;
+}
+async function doLogin() {
+  const email = $("#l-email").value.trim(), password = $("#l-pass").value;
+  if (!email || !password) return renderLogin("Enter email and password.");
+  try {
+    const r = await fetch(`${WORKER_URL}/login`, { method:"POST",
+      headers: { "Content-Type":"application/json" },
+      body: JSON.stringify({ email, password }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return renderLogin(data.error || `Login failed (${r.status})`);
+    localStorage.setItem("fl_jwt", data.token);
+    boot();
+  } catch (e) {
+    // Network-level failure: the sign-in service was unreachable. Probe it so we
+    // can tell "service down" from "this browser/network is blocking it".
+    let reachable = false;
+    try { const h = await fetch(`${WORKER_URL}/`, { cache:"no-store" }); reachable = h.ok; } catch {}
+    renderLogin(reachable
+      ? "Odd: the service is reachable but that request failed. Try again."
+      : "BLOCKED", { unreachable: !reachable });
+  }
+}
+async function saveSetup() {
+  const t = $("#s-token").value.trim();
+  const [owner, repo] = $("#s-repo").value.trim().split("/");
+  const branch = $("#s-branch").value.trim();
+  if (!t || !owner || !repo || !branch) return renderSetup("Fill all three fields.");
+  localStorage.setItem("fl_token", t); localStorage.setItem("fl_owner", owner);
+  localStorage.setItem("fl_repo", repo); localStorage.setItem("fl_branch", branch);
+  boot();
+}
+async function refresh() {
+  const spin = $("#spin"); if (spin) spin.style.display = "inline";
+  try { POSTS = await loadAll(); render(); }
+  catch (e) { renderSetup(`Could not load: ${e.message}`); }
+  FLASH = "";
+}
+async function boot() {
+  if (!signedIn()) return renderSetup();
+  $("#app").innerHTML = `<div class="kicker">Feedloop</div><h1>Loading<span class="dot">…</span></h1>`;
+  try { POSTS = await loadAll(); render(); }
+  catch (e) { renderSetup(`Could not load: ${e.message}`); }
+}
+boot();
+</script>
+</body>
+</html>
