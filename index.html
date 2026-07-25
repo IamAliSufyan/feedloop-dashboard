@@ -66,6 +66,9 @@ a { color:var(--coral); }
 <body><div class="wrap" id="app"></div>
 <script>
 "use strict";
+// When set, the dashboard uses email+password login via this Cloudflare worker
+// (which holds the GitHub credential server-side). Empty = direct-PAT mode.
+const WORKER_URL = "";
 const DEFAULTS = { owner:"IamAliSufyan", repo:"unloop-app", branch:"main" };
 const BASEDIR = "docs/marketing/feedloop";
 const BUCKETS = ["drafts","queue","published","rejected"];
@@ -74,22 +77,28 @@ const MANUAL = new Set(["tiktok"]);
 const FLAGS = ["HOLD","EDIT REQUIRED","ASSET NEEDED","MANUAL"];
 const cfg = () => ({
   token: localStorage.getItem("fl_token") || "",
+  jwt:   localStorage.getItem("fl_jwt")   || "",
   owner: localStorage.getItem("fl_owner") || DEFAULTS.owner,
   repo:  localStorage.getItem("fl_repo")  || DEFAULTS.repo,
   branch:localStorage.getItem("fl_branch")|| DEFAULTS.branch,
 });
+const workerMode = () => !!WORKER_URL;
+const signedIn = () => workerMode() ? !!cfg().jwt : !!cfg().token;
 let POSTS = [], FLASH = "", BUSY = false;
 const $ = s => document.querySelector(s);
 const esc = s => (s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
 async function gh(path, opts = {}) {
   const c = cfg();
-  const r = await fetch(`https://api.github.com${path}`, {
+  const base = workerMode() ? `${WORKER_URL}/gh` : "https://api.github.com";
+  const auth = workerMode() ? c.jwt : c.token;
+  const r = await fetch(`${base}${path}`, {
     ...opts,
-    headers: { "Authorization": `Bearer ${c.token}`, "Accept": "application/vnd.github+json",
+    headers: { "Authorization": `Bearer ${auth}`, "Accept": "application/vnd.github+json",
                "X-GitHub-Api-Version": "2022-11-28", ...(opts.headers||{}) },
   });
   if (r.status === 404 && opts.allow404) return null;
+  if (r.status === 401 && workerMode()) { localStorage.removeItem("fl_jwt"); }
   if (!r.ok) throw new Error(`${r.status} ${((await r.json().catch(()=>({}))).message)||r.statusText} (${path})`);
   return r.status === 204 ? null : r.json();
 }
@@ -217,7 +226,7 @@ function render() {
       <h1>The week ahead<span class="dot">.</span></h1></div>
       <span id="spin">working…</span>
       <button class="no" onclick="refresh()">↻ Refresh</button>
-      <button class="no" onclick="localStorage.removeItem('fl_token');boot()">Sign out</button></div>`;
+      <button class="no" onclick="localStorage.removeItem('fl_token');localStorage.removeItem('fl_jwt');boot()">Sign out</button></div>`;
   h += `<div class="sub">${POSTS.filter(p=>p.bucket==="drafts").length} awaiting approval ·
         ${POSTS.filter(p=>p.bucket==="queue").length} approved in queue ·
         actions commit to ${esc(cfg().repo)}@${esc(cfg().branch)} · Claude publishes the queue (or flag Publish ASAP)</div>`;
@@ -241,6 +250,7 @@ function render() {
 }
 
 function renderSetup(err) {
+  if (workerMode()) return renderLogin(err);
   const c = cfg();
   $("#app").innerHTML = `
     <div class="kicker">Feedloop · content pipeline</div>
@@ -262,6 +272,34 @@ function renderSetup(err) {
       <li>Expiration: 90 days (come back and paste a fresh one when it expires)</li></ol></div>
     </div>`;
 }
+function renderLogin(err) {
+  $("#app").innerHTML = `
+    <div class="kicker">Feedloop · content pipeline</div>
+    <h1>Sign in<span class="dot">.</span></h1>
+    <div class="sub">Once per device. Your session is remembered here for 180 days.</div>
+    <div class="setup">
+      ${err ? `<div class="flash err">${esc(err)}</div>` : ""}
+      <label>Email</label>
+      <input type="text" id="l-email" autocomplete="username" placeholder="you@example.com">
+      <label>Password</label>
+      <input type="password" id="l-pass" autocomplete="current-password"
+             onkeydown="if(event.key==='Enter')doLogin()">
+      <div style="margin-top:16px"><button class="ok" onclick="doLogin()">Sign in →</button></div>
+    </div>`;
+}
+async function doLogin() {
+  const email = $("#l-email").value.trim(), password = $("#l-pass").value;
+  if (!email || !password) return renderLogin("Enter email and password.");
+  try {
+    const r = await fetch(`${WORKER_URL}/login`, { method:"POST",
+      headers: { "Content-Type":"application/json" },
+      body: JSON.stringify({ email, password }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return renderLogin(data.error || `Login failed (${r.status})`);
+    localStorage.setItem("fl_jwt", data.token);
+    boot();
+  } catch (e) { renderLogin(`Could not reach the sign-in service: ${e.message}`); }
+}
 async function saveSetup() {
   const t = $("#s-token").value.trim();
   const [owner, repo] = $("#s-repo").value.trim().split("/");
@@ -278,7 +316,7 @@ async function refresh() {
   FLASH = "";
 }
 async function boot() {
-  if (!cfg().token) return renderSetup();
+  if (!signedIn()) return renderSetup();
   $("#app").innerHTML = `<div class="kicker">Feedloop</div><h1>Loading<span class="dot">…</span></h1>`;
   try { POSTS = await loadAll(); render(); }
   catch (e) { renderSetup(`Could not load: ${e.message}`); }
