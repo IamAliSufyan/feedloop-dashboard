@@ -82,7 +82,7 @@ const cfg = () => ({
   repo:  localStorage.getItem("fl_repo")  || DEFAULTS.repo,
   branch:localStorage.getItem("fl_branch")|| DEFAULTS.branch,
 });
-const workerMode = () => !!WORKER_URL;
+const workerMode = () => !!WORKER_URL && localStorage.getItem("fl_forcepat") !== "1";
 const signedIn = () => workerMode() ? !!cfg().jwt : !!cfg().token;
 let POSTS = [], FLASH = "", BUSY = false;
 const $ = s => document.querySelector(s);
@@ -272,13 +272,31 @@ function renderSetup(err) {
       <li>Expiration: 90 days (come back and paste a fresh one when it expires)</li></ol></div>
     </div>`;
 }
-function renderLogin(err) {
+function renderLogin(err, opts = {}) {
+  let banner = "";
+  if (err === "BLOCKED" || opts.unreachable) {
+    banner = `<div class="flash err">Could not reach the sign-in service.</div>
+      <div class="notes"><b>Two likely causes, in order:</b>
+      <ol style="margin:6px 0 0 18px">
+        <li>You tried while the service was still starting up. <b>Just try again now</b> — it is up.</li>
+        <li>An ad blocker, VPN, or DNS filter is blocking <code>workers.dev</code> (some blocklists
+            include it). Test by opening
+            <a href="${WORKER_URL}/" target="_blank">${WORKER_URL}/</a> directly:
+            if you do not see <code>{"ok":true}</code>, allowlist that domain or turn the blocker
+            off for this site.</li>
+      </ol>
+      <div style="margin-top:8px">Still stuck? Use the
+      <a href="#" onclick="localStorage.setItem('fl_forcepat','1');boot();return false">token sign-in</a>
+      as a fallback.</div></div>`;
+  } else if (err) {
+    banner = `<div class="flash err">${esc(err)}</div>`;
+  }
   $("#app").innerHTML = `
     <div class="kicker">Feedloop · content pipeline</div>
     <h1>Sign in<span class="dot">.</span></h1>
     <div class="sub">Once per device. Your session is remembered here for 180 days.</div>
     <div class="setup">
-      ${err ? `<div class="flash err">${esc(err)}</div>` : ""}
+      ${banner}
       <label>Email</label>
       <input type="text" id="l-email" autocomplete="username" placeholder="you@example.com">
       <label>Password</label>
@@ -298,7 +316,15 @@ async function doLogin() {
     if (!r.ok) return renderLogin(data.error || `Login failed (${r.status})`);
     localStorage.setItem("fl_jwt", data.token);
     boot();
-  } catch (e) { renderLogin(`Could not reach the sign-in service: ${e.message}`); }
+  } catch (e) {
+    // Network-level failure: the sign-in service was unreachable. Probe it so we
+    // can tell "service down" from "this browser/network is blocking it".
+    let reachable = false;
+    try { const h = await fetch(`${WORKER_URL}/`, { cache:"no-store" }); reachable = h.ok; } catch {}
+    renderLogin(reachable
+      ? "Odd: the service is reachable but that request failed. Try again."
+      : "BLOCKED", { unreachable: !reachable });
+  }
 }
 async function saveSetup() {
   const t = $("#s-token").value.trim();
