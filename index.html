@@ -68,7 +68,7 @@ a { color:var(--coral); }
 "use strict";
 // When set, the dashboard uses email+password login via this Cloudflare worker
 // (which holds the GitHub credential server-side). Empty = direct-PAT mode.
-const WORKER_URL = "";
+const WORKER_URL = "https://feedloop.tryunloop.workers.dev";
 const DEFAULTS = { owner:"IamAliSufyan", repo:"unloop-app", branch:"main" };
 const BASEDIR = "docs/marketing/feedloop";
 const BUCKETS = ["drafts","queue","published","rejected"];
